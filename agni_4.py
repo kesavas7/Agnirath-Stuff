@@ -28,7 +28,7 @@ for ep in range(episodes):
     obs, _ = env.reset()
     done = False
     total_reward = 0
-    while not done:
+    while not done: # this loops keeps on running until the lever falls or time runs out.
         cart_pos, cart_vel, angle, angle_vel = obs
         error = angle
         force = pid.update(error)
