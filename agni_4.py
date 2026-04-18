@@ -35,7 +35,7 @@ for ep in range(episodes):
         action = 1 if force > 0 else 0
         obs, reward, terminated, truncated, _ = env.step(action)
         done = terminated or truncated
-        total_reward += reward
+        total_reward += reward #gives the total number of successful actions
         env.render()
     print(f"Episode {ep+1}: Score = {total_reward}")
 env.close()
