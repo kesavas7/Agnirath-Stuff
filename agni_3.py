@@ -57,6 +57,7 @@ print("Crr:", Crr)
 a_pred = -(k1 * v**2 + k2) - G * np.sin(theta)
 #acceleration is found again from the predicted values to plot the graph
 
+#figure is then plotted using velocity and acc
 plt.figure(figsize=(8, 5))
 plt.scatter(v, a, s=10, label="Actual")
 plt.scatter(v, a_pred, s=10, label="Fitted")
