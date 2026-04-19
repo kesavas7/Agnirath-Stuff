@@ -7,7 +7,7 @@ All power values in Watts, energy in kWh, velocity in m/s.
 Car Constants:
     Mass            : 250 kg
     CdA             : 0.118 m²
-    Crr             : 0.004
+    Crr             : 0.0052
     Battery         : 3.1 kWh
     Panel area      : 6.0 m²
     Panel efficiency: 24%
@@ -22,7 +22,7 @@ import numpy as np
 # ─────────────────────────────────────────────────────────────────────────────
 MASS          = 250.0    # kg
 CDA           = 0.118    # m²  (drag coefficient × frontal area)
-CRR           = 0.004    # rolling resistance coefficient
+CRR           = 0.0052   # rolling resistance coefficient
 RHO_AIR       = 1.2      # kg/m³ air density
 G             = 9.81     # m/s²
 
