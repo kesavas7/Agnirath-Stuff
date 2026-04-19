@@ -14,6 +14,9 @@ Rules:
     - All driving must cease by 5:00 PM
     - Battery SOC must be >= 20% at 5:00 PM
     - Optimal velocity = minimum feasible (minimizes drag, maximizes solar)
+
+FIX: SOC at loop start is now correctly computed AFTER solar charging
+     during the 30-minute control stop, not at raw arrival SOC.
 """
 
 import numpy as np
@@ -26,16 +29,47 @@ from physics import (
 # ─────────────────────────────────────────────────────────────────────────────
 # CONSTANTS
 # ─────────────────────────────────────────────────────────────────────────────
-LOOP_DIST_M      = 35_000    # 35 km per loop in metres
-STOP_BETWEEN_S   = 5 * 60    # 5-minute mandatory stop between loops
-RACE_END_SEC     = 17 * 3600  # 5:00 PM
+LOOP_DIST_M    = 35_000    # 35 km per loop in metres
+STOP_BETWEEN_S = 5 * 60    # 5-minute mandatory stop between loops
+CONTROL_STOP_S = 30 * 60   # 30-minute mandatory control stop at Zeerust
+RACE_END_SEC   = 17 * 3600  # 5:00 PM
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SOLAR CHARGING DURING A STATIONARY STOP
+# ─────────────────────────────────────────────────────────────────────────────
+def soc_after_charging(t_start_sec, duration_s, soc_start, dt=30):
+    """
+    Compute SOC after the car charges from solar panels while stationary.
+
+    Motor draw = 0 during stops, so all solar power goes into the battery.
+
+    Parameters
+    ----------
+    t_start_sec : absolute start time of stop (s from midnight)
+    duration_s  : length of stop in seconds
+    soc_start   : SOC fraction at start of stop
+    dt          : integration timestep in seconds
+
+    Returns
+    -------
+    soc_end : SOC fraction at end of stop
+    """
+    E_batt_wh = soc_start * BATTERY_KWH * 1000
+
+    for t in np.arange(t_start_sec, t_start_sec + duration_s, dt):
+        P_solar   = solar_power(t)
+        dE        = P_solar * (dt / 3600)                      # Wh gained
+        E_batt_wh = min(E_batt_wh + dE, BATTERY_KWH * 1000)   # clamp to 100%
+
+    return E_batt_wh / (BATTERY_KWH * 1000)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # LOOP PHYSICS (flat terrain, slope = 0)
 # ─────────────────────────────────────────────────────────────────────────────
 def loop_battery_power(v_ms):
-    """Electrical power drawn from battery during a loop (W). Flat terrain."""
+    """Electrical power drawn from battery while driving a loop (W). Flat terrain."""
     P_mech = aero_drag_power(v_ms) + rolling_resistance_power(v_ms, 0.0)
     return P_mech / ETA_MOTOR
 
@@ -49,10 +83,11 @@ def loop_energy_wh(v_ms, t_sec_start):
     """
     Net energy drawn from battery (Wh) to complete one loop.
     Solar evaluated at midpoint time of the loop.
+    Negative value means solar exceeds motor draw (battery gains energy).
     """
-    loop_time_s    = LOOP_DIST_M / v_ms
-    t_mid          = t_sec_start + loop_time_s / 2
-    P_net          = loop_net_power(v_ms, t_mid)
+    loop_time_s = LOOP_DIST_M / v_ms
+    t_mid       = t_sec_start + loop_time_s / 2
+    P_net       = loop_net_power(v_ms, t_mid)
     return P_net * loop_time_s / 3600   # Wh
 
 
@@ -64,6 +99,7 @@ def check_feasibility(N, v_ms, t_start_sec, soc_start):
     Check if N loops at v_ms are feasible given:
         t_start_sec : absolute time when loop phase begins (after control stop)
         soc_start   : SOC fraction at start of loop phase
+                      (should already include control-stop solar charging)
 
     Returns (feasible, soc_final, t_final_sec)
     """
@@ -74,21 +110,27 @@ def check_feasibility(N, v_ms, t_start_sec, soc_start):
     for loop_idx in range(N):
         loop_time_s = LOOP_DIST_M / v_ms
 
-        # Check time: must finish loop before 5 PM
+        # Time check: must finish loop before 5 PM
         if t_current + loop_time_s > RACE_END_SEC:
             return False, None, None
 
-        # Energy for this loop
-        dE = loop_energy_wh(v_ms, t_current)
+        # Energy for this loop (can be negative = solar tops up battery)
+        dE          = loop_energy_wh(v_ms, t_current)
         E_spent_wh += dE
         t_current  += loop_time_s
 
-        # Check energy budget
+        # Energy budget check
         if E_spent_wh > E_available_wh:
             return False, None, None
 
-        # Add stop time (except after last loop)
+        # Inter-loop stop: car charges from solar panels
         if loop_idx < N - 1:
+            # Solar charging during the 5-minute stop
+            soc_before_stop = soc_start - (E_spent_wh / (BATTERY_KWH * 1000))
+            soc_after_stop  = soc_after_charging(t_current, STOP_BETWEEN_S, soc_before_stop)
+            # Recalculate E_spent_wh to reflect the charging gain
+            E_spent_wh = (soc_start - soc_after_stop) * BATTERY_KWH * 1000
+
             t_current += STOP_BETWEEN_S
             if t_current >= RACE_END_SEC:
                 return False, None, None
@@ -105,7 +147,7 @@ def find_optimal_velocity(N, t_start_sec, soc_start, n_search=5000):
     For a fixed N, scan velocity range to find:
         v_min : minimum feasible speed (time constraint)
         v_max : maximum feasible speed (energy constraint)
-    Returns (v_optimal, v_min, v_max) or None if infeasible.
+    Returns (v_optimal, v_min, v_max) or (None, None, None) if infeasible.
     """
     v_range    = np.linspace(V_MIN_MS, V_MAX_MS, n_search)
     feasible_v = []
@@ -120,7 +162,7 @@ def find_optimal_velocity(N, t_start_sec, soc_start, n_search=5000):
 
     v_min     = min(feasible_v)
     v_max     = max(feasible_v)
-    v_optimal = v_min   # minimum speed = minimum drag + maximum solar time
+    v_optimal = v_min   # minimum speed → minimum drag + maximum time under solar
 
     return v_optimal, v_min, v_max
 
@@ -135,12 +177,14 @@ def optimize_loops(t_arrival_sec, soc_arrival, verbose=True):
     Parameters
     ----------
     t_arrival_sec : absolute time of arrival at Zeerust (s from midnight)
-    soc_arrival   : SOC fraction at arrival
+    soc_arrival   : SOC fraction at arrival (BEFORE control stop charging)
 
     Returns dict with results.
     """
-    CONTROL_STOP_S = 30 * 60
-    t_loop_start   = t_arrival_sec + CONTROL_STOP_S
+    t_loop_start = t_arrival_sec + CONTROL_STOP_S
+
+    # ── Account for solar charging during the 30-min control stop ──
+    soc_loop_start = soc_after_charging(t_arrival_sec, CONTROL_STOP_S, soc_arrival)
 
     if verbose:
         print("=" * 60)
@@ -151,10 +195,13 @@ def optimize_loops(t_arrival_sec, soc_arrival, verbose=True):
         lp_h  = int(t_loop_start // 3600)
         lp_m  = int((t_loop_start % 3600) // 60)
         print(f"  Arrival time       : {arr_h:02d}:{arr_m:02d}")
-        print(f"  Loop phase starts  : {lp_h:02d}:{lp_m:02d}  (after 30-min stop)")
-        print(f"  SOC at loop start  : {soc_arrival*100:.1f}%")
+        print(f"  SOC at arrival     : {soc_arrival*100:.1f}%")
+        print(f"  Solar charging     : +{(soc_loop_start - soc_arrival)*100:.1f}% "
+              f"during 30-min stop")
+        print(f"  Loop phase starts  : {lp_h:02d}:{lp_m:02d}")
+        print(f"  SOC at loop start  : {soc_loop_start*100:.1f}%")
         print(f"  Energy available   : "
-              f"{(soc_arrival - SOC_MIN)*BATTERY_KWH*1000:.1f} Wh above minimum")
+              f"{(soc_loop_start - SOC_MIN)*BATTERY_KWH*1000:.1f} Wh above minimum")
         print()
         print(f"  {'N':>3}  {'v_min km/h':>12}  {'v_max km/h':>12}  "
               f"{'Feasible':>10}  {'Optimal km/h':>13}")
@@ -167,11 +214,10 @@ def optimize_loops(t_arrival_sec, soc_arrival, verbose=True):
 
     for N in range(1, 20):
         v_opt, v_min, v_max = find_optimal_velocity(
-            N, t_loop_start, soc_arrival)
+            N, t_loop_start, soc_loop_start)   # ← use charged SOC
 
         if v_opt is None:
             if verbose:
-                v_min_t = N * LOOP_DIST_M / ((RACE_END_SEC - t_loop_start))
                 print(f"  {N:>3}  {'—':>12}  {'—':>12}  {'NO':>10}  {'—':>13}")
             break
 
@@ -186,7 +232,7 @@ def optimize_loops(t_arrival_sec, soc_arrival, verbose=True):
 
     # Final simulation with best N and v
     ok, soc_final, t_final = check_feasibility(
-        best_N, best_v, t_loop_start, soc_arrival)
+        best_N, best_v, t_loop_start, soc_loop_start)
 
     total_loop_dist = best_N * LOOP_DIST_M / 1000   # km
 
@@ -210,12 +256,13 @@ def optimize_loops(t_arrival_sec, soc_arrival, verbose=True):
         "t_final_sec"    : t_final,
         "total_loop_km"  : total_loop_dist,
         "t_loop_start"   : t_loop_start,
-        "soc_loop_start" : soc_arrival,
+        "soc_loop_start" : soc_loop_start,   # post-charging SOC
+        "soc_at_arrival" : soc_arrival,       # raw arrival SOC (for reference)
     }
 
 
 if __name__ == "__main__":
     # Test with example values
     t_arr = 14 * 3600   # arrive at 2:00 PM
-    soc   = 0.65        # 65% SOC
+    soc   = 0.65        # 65% SOC at arrival
     optimize_loops(t_arr, soc)
