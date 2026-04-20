@@ -39,7 +39,7 @@ CONTROL_STOP_S  = 30 * 60     # mandatory 30 min stop at Zeerust
 # ─────────────────────────────────────────────────────────────────────────────
 # LOAD ROUTE DATA
 # ─────────────────────────────────────────────────────────────────────────────
-def load_route(csv_path="route_data.csv"):
+def load_route(csv_path="route_data_100m.csv"):
     df = pd.read_csv(csv_path)
     slopes = df["slope_deg"].values.copy()
     dists  = df["segment_length_m"].values.copy()
