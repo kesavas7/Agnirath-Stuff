@@ -42,7 +42,7 @@ SIGMA         = 11600.0  # seconds
 
 # Speed limits
 V_MIN_MS      = 60  / 3.6   # 60  km/h in m/s
-V_MAX_MS      = 130 / 3.6   # 130 km/h in m/s
+V_MAX_MS      = 100 / 3.6   # 130 km/h in m/s
 
 # SOC limits
 SOC_MIN       = 0.20     # never drop below 20%
